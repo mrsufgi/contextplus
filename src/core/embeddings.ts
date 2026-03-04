@@ -266,28 +266,42 @@ export async function loadEmbeddingCache(rootDir: string, fileName: string): Pro
   }
 }
 
+const _saveLocks = new Map<string, Promise<void>>();
+
 export async function saveEmbeddingCache(
   rootDir: string,
   cache: EmbeddingCache,
   fileName: string,
   removedKeys?: string[],
 ): Promise<void> {
-  await ensureMcpDataDir(rootDir);
-  const filePath = join(rootDir, CACHE_DIR, fileName);
-  let existing: EmbeddingCache = {};
-  try { existing = JSON.parse(await readFile(filePath, "utf-8")); } catch {}
-  if (removedKeys) {
-    for (const key of removedKeys) delete existing[key];
+  const lockKey = `${rootDir}:${fileName}`;
+  while (_saveLocks.has(lockKey)) {
+    await _saveLocks.get(lockKey);
   }
-  const merged = { ...existing, ...cache };
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(merged, (_key, value) => {
-    if (Array.isArray(value) && value.length > 100 && typeof value[0] === "number") {
-      return value.map((v: number) => Math.round(v * 1e6) / 1e6);
+  let resolve!: () => void;
+  const lock = new Promise<void>((r) => { resolve = r; });
+  _saveLocks.set(lockKey, lock);
+  try {
+    await ensureMcpDataDir(rootDir);
+    const filePath = join(rootDir, CACHE_DIR, fileName);
+    let existing: EmbeddingCache = {};
+    try { existing = JSON.parse(await readFile(filePath, "utf-8")); } catch {}
+    if (removedKeys) {
+      for (const key of removedKeys) delete existing[key];
     }
-    return value;
-  }));
-  await rename(tmpPath, filePath);
+    const merged = { ...existing, ...cache };
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(merged, (_key, value) => {
+      if (Array.isArray(value) && value.length > 100 && typeof value[0] === "number") {
+        return value.map((v: number) => Math.round(v * 1e6) / 1e6);
+      }
+      return value;
+    }));
+    await rename(tmpPath, filePath);
+  } finally {
+    _saveLocks.delete(lockKey);
+    resolve();
+  }
 }
 
 function formatLineRange(line: number, endLine?: number): string {
