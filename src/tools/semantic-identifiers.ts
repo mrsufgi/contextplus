@@ -434,8 +434,16 @@ export async function refreshIdentifierEmbeddings(options: { rootDir: string; re
 
   const cache = await loadEmbeddingCache(options.rootDir, IDENTIFIER_CACHE_FILE);
   const pending: { key: string; hash: string; text: string }[] = [];
+  const removedKeys: string[] = [];
 
   for (const relativePath of uniquePaths) {
+    const definitionPrefix = `id:${relativePath}:`;
+    const callsitePrefix = `${CALLSITE_CACHE_PREFIX}${relativePath}:`;
+    for (const key of Object.keys(cache)) {
+      if (key.startsWith(definitionPrefix) || key.startsWith(callsitePrefix)) {
+        removedKeys.push(key);
+      }
+    }
     removeFileScopedCacheEntries(cache, relativePath);
     const docs = await buildIdentifierDocsForFile(options.rootDir, relativePath);
     for (const doc of docs) {
@@ -456,7 +464,7 @@ export async function refreshIdentifierEmbeddings(options: { rootDir: string; re
     }
   }
 
-  await saveEmbeddingCache(options.rootDir, cache, IDENTIFIER_CACHE_FILE);
+  await saveEmbeddingCache(options.rootDir, cache, IDENTIFIER_CACHE_FILE, removedKeys);
   invalidateIdentifierSearchCache();
   return pending.length;
 }

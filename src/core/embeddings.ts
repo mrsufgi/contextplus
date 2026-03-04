@@ -2,7 +2,7 @@
 // Indexes file headers and symbols, caches embeddings to disk for speed
 
 import { Ollama } from "ollama";
-import { readFile, writeFile, mkdir } from "fs/promises";
+import { readFile, writeFile, mkdir, rename } from "fs/promises";
 import { join } from "path";
 
 export interface SearchDocument {
@@ -266,13 +266,23 @@ export async function loadEmbeddingCache(rootDir: string, fileName: string): Pro
   }
 }
 
-export async function saveEmbeddingCache(rootDir: string, cache: EmbeddingCache, fileName: string): Promise<void> {
+export async function saveEmbeddingCache(
+  rootDir: string,
+  cache: EmbeddingCache,
+  fileName: string,
+  removedKeys?: string[],
+): Promise<void> {
   await ensureMcpDataDir(rootDir);
   const filePath = join(rootDir, CACHE_DIR, fileName);
   let existing: EmbeddingCache = {};
   try { existing = JSON.parse(await readFile(filePath, "utf-8")); } catch {}
+  if (removedKeys) {
+    for (const key of removedKeys) delete existing[key];
+  }
   const merged = { ...existing, ...cache };
-  await writeFile(filePath, JSON.stringify(merged));
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  await writeFile(tmpPath, JSON.stringify(merged));
+  await rename(tmpPath, filePath);
 }
 
 function formatLineRange(line: number, endLine?: number): string {
