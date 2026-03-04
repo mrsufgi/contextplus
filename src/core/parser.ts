@@ -327,6 +327,10 @@ function parseGeneric(lines: string[]): CodeSymbol[] {
 
 export async function analyzeFile(filePath: string): Promise<FileAnalysis> {
   const content = await readFile(filePath, "utf-8");
+  return analyzeFileFromContent(filePath, content);
+}
+
+export async function analyzeFileFromContent(filePath: string, content: string): Promise<FileAnalysis> {
   const lines = content.split("\n");
   const ext = extname(filePath).toLowerCase();
 

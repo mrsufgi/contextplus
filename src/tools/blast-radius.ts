@@ -4,6 +4,7 @@
 import { walkDirectory } from "../core/walker.js";
 import { isSupportedFile } from "../core/parser.js";
 import { readFile } from "fs/promises";
+import { getCachedFileLines } from "./semantic-identifiers.js";
 
 export interface BlastRadiusOptions {
   rootDir: string;
@@ -18,30 +19,40 @@ interface SymbolUsage {
 }
 
 export async function getBlastRadius(options: BlastRadiusOptions): Promise<string> {
-  const entries = await walkDirectory({ rootDir: options.rootDir, depthLimit: 0 });
-  const files = entries.filter((e) => !e.isDirectory && isSupportedFile(e.path));
+  const cachedLines = getCachedFileLines();
   const usages: SymbolUsage[] = [];
   const symbolPattern = new RegExp(`\\b${escapeRegex(options.symbolName)}\\b`, "g");
 
-  for (const file of files) {
-    try {
-      const content = await readFile(file.path, "utf-8");
-      const lines = content.split("\n");
-
+  if (cachedLines && cachedLines.size > 0) {
+    for (const [relativePath, lines] of cachedLines) {
       for (let i = 0; i < lines.length; i++) {
         if (symbolPattern.test(lines[i])) {
-          const isDefinition = options.fileContext && file.relativePath === options.fileContext && isDefinitionLine(lines[i], options.symbolName);
+          const isDefinition = options.fileContext && relativePath === options.fileContext && isDefinitionLine(lines[i], options.symbolName);
           if (!isDefinition) {
-            usages.push({
-              file: file.relativePath,
-              line: i + 1,
-              context: lines[i].trim().substring(0, 120),
-            });
+            usages.push({ file: relativePath, line: i + 1, context: lines[i].trim().substring(0, 120) });
           }
           symbolPattern.lastIndex = 0;
         }
       }
-    } catch {
+    }
+  } else {
+    const entries = await walkDirectory({ rootDir: options.rootDir, depthLimit: 0 });
+    const files = entries.filter((e) => !e.isDirectory && isSupportedFile(e.path));
+    for (const file of files) {
+      try {
+        const content = await readFile(file.path, "utf-8");
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (symbolPattern.test(lines[i])) {
+            const isDefinition = options.fileContext && file.relativePath === options.fileContext && isDefinitionLine(lines[i], options.symbolName);
+            if (!isDefinition) {
+              usages.push({ file: file.relativePath, line: i + 1, context: lines[i].trim().substring(0, 120) });
+            }
+            symbolPattern.lastIndex = 0;
+          }
+        }
+      } catch {
+      }
     }
   }
 

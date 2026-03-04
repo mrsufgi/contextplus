@@ -12,7 +12,7 @@ export interface EmbeddingTrackerOptions {
 }
 
 const MIN_FILES_PER_TICK = 5;
-const MAX_FILES_PER_TICK = 50;
+const MAX_FILES_PER_TICK = 200;
 const DEFAULT_FILES_PER_TICK = 8;
 const DEFAULT_DEBOUNCE_MS = 700;
 

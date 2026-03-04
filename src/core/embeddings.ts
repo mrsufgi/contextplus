@@ -61,7 +61,7 @@ const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text";
 const CACHE_DIR = ".mcp_data";
 const CACHE_FILE = "embeddings-cache.json";
 const MIN_EMBED_BATCH_SIZE = 5;
-const MAX_EMBED_BATCH_SIZE = 256;
+const MAX_EMBED_BATCH_SIZE = 512;
 const DEFAULT_EMBED_BATCH_SIZE = 8;
 const MIN_EMBED_INPUT_CHARS = 256;
 const SINGLE_INPUT_SHRINK_FACTOR = 0.75;
@@ -281,7 +281,12 @@ export async function saveEmbeddingCache(
   }
   const merged = { ...existing, ...cache };
   const tmpPath = `${filePath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(merged));
+  await writeFile(tmpPath, JSON.stringify(merged, (_key, value) => {
+    if (Array.isArray(value) && value.length > 100 && typeof value[0] === "number") {
+      return value.map((v: number) => Math.round(v * 1e6) / 1e6);
+    }
+    return value;
+  }));
   await rename(tmpPath, filePath);
 }
 

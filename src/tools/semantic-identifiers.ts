@@ -3,7 +3,7 @@
 
 import { readFile } from "fs/promises";
 import { walkDirectory } from "../core/walker.js";
-import { analyzeFile, flattenSymbols, isSupportedFile } from "../core/parser.js";
+import { analyzeFile, analyzeFileFromContent, flattenSymbols, isSupportedFile } from "../core/parser.js";
 import {
   fetchEmbedding,
   getEmbeddingBatchSize,
@@ -187,11 +187,19 @@ async function buildIdentifierIndex(rootDir: string): Promise<IdentifierIndex> {
   const docs: IdentifierDoc[] = [];
   const fileLines = new Map<string, string[]>();
 
-  for (const file of files) {
-    try {
+  const FILE_CONCURRENCY = 20;
+  for (let i = 0; i < files.length; i += FILE_CONCURRENCY) {
+    const batch = files.slice(i, i + FILE_CONCURRENCY);
+    const results = await Promise.allSettled(batch.map(async (file) => {
       const content = await readFile(file.path, "utf-8");
-      fileLines.set(file.relativePath, content.split("\n"));
-      const analysis = await analyzeFile(file.path);
+      const lines = content.split("\n");
+      const analysis = await analyzeFileFromContent(file.path, content);
+      return { file, lines, analysis };
+    }));
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      const { file, lines, analysis } = result.value;
+      fileLines.set(file.relativePath, lines);
       const flat = flattenSymbols(analysis.symbols);
       for (const symbol of flat) {
         docs.push({
@@ -207,7 +215,6 @@ async function buildIdentifierIndex(rootDir: string): Promise<IdentifierIndex> {
           text: `${symbol.name} ${symbol.kind} ${symbol.signature} ${file.relativePath} ${analysis.header} ${symbol.parentName ?? ""}`,
         });
       }
-    } catch {
     }
   }
 
@@ -426,6 +433,10 @@ export function invalidateIdentifierSearchCache(): void {
   cachedRootDir = null;
   cachedAt = 0;
   cachedIndex = null;
+}
+
+export function getCachedFileLines(): Map<string, string[]> | null {
+  return cachedIndex?.fileLines ?? null;
 }
 
 export async function refreshIdentifierEmbeddings(options: { rootDir: string; relativePaths: string[] }): Promise<number> {
