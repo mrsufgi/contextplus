@@ -61,7 +61,7 @@ const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text";
 const CACHE_DIR = ".mcp_data";
 const CACHE_FILE = "embeddings-cache.json";
 const MIN_EMBED_BATCH_SIZE = 5;
-const MAX_EMBED_BATCH_SIZE = 10;
+const MAX_EMBED_BATCH_SIZE = 256;
 const DEFAULT_EMBED_BATCH_SIZE = 8;
 const MIN_EMBED_INPUT_CHARS = 256;
 const SINGLE_INPUT_SHRINK_FACTOR = 0.75;
@@ -268,7 +268,11 @@ export async function loadEmbeddingCache(rootDir: string, fileName: string): Pro
 
 export async function saveEmbeddingCache(rootDir: string, cache: EmbeddingCache, fileName: string): Promise<void> {
   await ensureMcpDataDir(rootDir);
-  await writeFile(join(rootDir, CACHE_DIR, fileName), JSON.stringify(cache));
+  const filePath = join(rootDir, CACHE_DIR, fileName);
+  let existing: EmbeddingCache = {};
+  try { existing = JSON.parse(await readFile(filePath, "utf-8")); } catch {}
+  const merged = { ...existing, ...cache };
+  await writeFile(filePath, JSON.stringify(merged));
 }
 
 function formatLineRange(line: number, endLine?: number): string {
