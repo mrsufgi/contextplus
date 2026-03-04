@@ -18,7 +18,7 @@ export interface FileEntry {
   depth: number;
 }
 
-const ALWAYS_IGNORE = new Set([
+const BASE_IGNORE = [
   "node_modules",
   ".git",
   ".svn",
@@ -36,7 +36,14 @@ const ALWAYS_IGNORE = new Set([
   ".cache",
   ".turbo",
   ".parcel-cache",
-]);
+];
+
+function buildIgnoreSet(): Set<string> {
+  const extra = (process.env.CONTEXTPLUS_IGNORE_DIRS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  return new Set([...BASE_IGNORE, ...extra]);
+}
+
+const ALWAYS_IGNORE = buildIgnoreSet();
 
 async function loadIgnoreRules(rootDir: string): Promise<Ignore> {
   const ig = ignore();
