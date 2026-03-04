@@ -32,7 +32,7 @@ let cachedIndex: SearchIndex | null = null;
 let cachedRootDir: string | null = null;
 let lastIndexTime = 0;
 
-const INDEX_TTL_MS = 60000;
+const INDEX_TTL_MS = 300000;
 const SEARCH_CACHE_FILE = "embeddings-cache.json";
 const TEXT_INDEX_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonc", ".yaml", ".yml", ".toml", ".lock", ".env"]);
 const MAX_TEXT_DOC_CHARS = 4000;
@@ -172,9 +172,11 @@ export async function refreshFileSearchEmbeddings(options: { rootDir: string; re
   const cache = await loadEmbeddingCache(options.rootDir, SEARCH_CACHE_FILE);
   const pending: { path: string; hash: string; text: string }[] = [];
 
+  const removedKeys: string[] = [];
   for (const relativePath of uniquePaths) {
     const doc = await buildSearchDocumentForFile(options.rootDir, relativePath);
     if (!doc) {
+      if (cache[relativePath]) removedKeys.push(relativePath);
       delete cache[relativePath];
       continue;
     }
@@ -196,7 +198,7 @@ export async function refreshFileSearchEmbeddings(options: { rootDir: string; re
     }
   }
 
-  await saveEmbeddingCache(options.rootDir, cache, SEARCH_CACHE_FILE);
+  await saveEmbeddingCache(options.rootDir, cache, SEARCH_CACHE_FILE, removedKeys);
   invalidateSearchCache();
   return pending.length;
 }

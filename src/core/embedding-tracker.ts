@@ -12,7 +12,7 @@ export interface EmbeddingTrackerOptions {
 }
 
 const MIN_FILES_PER_TICK = 5;
-const MAX_FILES_PER_TICK = 10;
+const MAX_FILES_PER_TICK = 50;
 const DEFAULT_FILES_PER_TICK = 8;
 const DEFAULT_DEBOUNCE_MS = 700;
 
@@ -22,7 +22,13 @@ const IGNORE_PREFIXES = [
   "node_modules/",
   "build/",
   "dist/",
-  "landing/.next/",
+  ".next/",
+  "generated/",
+  "gen/",
+  "coverage/",
+  ".turbo/",
+  ".cache/",
+  "__pycache__/",
 ];
 
 function normalizeRelativePath(path: string): string {
@@ -31,7 +37,12 @@ function normalizeRelativePath(path: string): string {
 
 function shouldTrack(path: string): boolean {
   if (!path) return false;
-  return !IGNORE_PREFIXES.some((prefix) => path.startsWith(prefix));
+  const segments = path.split("/");
+  for (const prefix of IGNORE_PREFIXES) {
+    const dir = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+    if (segments.includes(dir)) return false;
+  }
+  return true;
 }
 
 function clampFilesPerTick(value: number | undefined): number {

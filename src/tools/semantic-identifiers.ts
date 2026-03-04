@@ -60,7 +60,7 @@ interface IdentifierIndex {
 
 const IDENTIFIER_CACHE_FILE = "identifier-embeddings-cache.json";
 const CALLSITE_CACHE_PREFIX = "callsite:";
-const INDEX_TTL_MS = 60_000;
+const INDEX_TTL_MS = 300_000;
 
 let cachedRootDir: string | null = null;
 let cachedAt = 0;
