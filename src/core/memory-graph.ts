@@ -56,8 +56,26 @@ const SIMILARITY_THRESHOLD = 0.72;
 const STALE_THRESHOLD = 0.15;
 
 let graphCache = new Map<string, GraphStore>();
+let adjacencyCache = new Map<string, Map<string, Set<string>>>();
 let savePending = new Map<string, boolean>();
 let saveTimeout = new Map<string, ReturnType<typeof setTimeout>>();
+
+function getAdjacency(rootDir: string, graph: GraphStore): Map<string, Set<string>> {
+  if (adjacencyCache.has(rootDir)) return adjacencyCache.get(rootDir)!;
+  const adj = new Map<string, Set<string>>();
+  for (const [edgeId, edge] of Object.entries(graph.edges)) {
+    if (!adj.has(edge.source)) adj.set(edge.source, new Set());
+    if (!adj.has(edge.target)) adj.set(edge.target, new Set());
+    adj.get(edge.source)!.add(edgeId);
+    adj.get(edge.target)!.add(edgeId);
+  }
+  adjacencyCache.set(rootDir, adj);
+  return adj;
+}
+
+function invalidateAdjacency(rootDir: string): void {
+  adjacencyCache.delete(rootDir);
+}
 
 function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -114,7 +132,13 @@ function scheduleSave(rootDir: string): void {
   }, 500));
 }
 
-function getEdgesForNode(graph: GraphStore, nodeId: string): MemoryEdge[] {
+function getEdgesForNode(graph: GraphStore, nodeId: string, rootDir?: string): MemoryEdge[] {
+  if (rootDir) {
+    const adj = getAdjacency(rootDir, graph);
+    const edgeIds = adj.get(nodeId);
+    if (!edgeIds) return [];
+    return Array.from(edgeIds).map((id) => graph.edges[id]).filter(Boolean);
+  }
   return Object.values(graph.edges).filter(e => e.source === nodeId || e.target === nodeId);
 }
 
@@ -176,6 +200,7 @@ export async function createRelation(rootDir: string, sourceId: string, targetId
     metadata: metadata ?? {},
   };
   graph.edges[edge.id] = edge;
+  invalidateAdjacency(rootDir);
   scheduleSave(rootDir);
   return edge;
 }
@@ -203,7 +228,7 @@ export async function searchGraph(rootDir: string, query: string, maxDepth: numb
   const visited = new Set(directHits.map(h => h.node.id));
 
   for (const hit of directHits) {
-    traverseNeighbors(graph, hit.node.id, queryVec, 1, maxDepth, [hit.node.label], visited, neighborResults, edgeFilter);
+    traverseNeighbors(graph, rootDir, hit.node.id, queryVec, 1, maxDepth, [hit.node.label], visited, neighborResults, edgeFilter);
   }
 
   neighborResults.sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -218,12 +243,12 @@ export async function searchGraph(rootDir: string, query: string, maxDepth: numb
 }
 
 function traverseNeighbors(
-  graph: GraphStore, nodeId: string, queryVec: number[], depth: number, maxDepth: number,
+  graph: GraphStore, rootDir: string, nodeId: string, queryVec: number[], depth: number, maxDepth: number,
   pathLabels: string[], visited: Set<string>, results: TraversalResult[], edgeFilter?: RelationType[],
 ): void {
   if (depth > maxDepth) return;
 
-  for (const edge of getEdgesForNode(graph, nodeId)) {
+  for (const edge of getEdgesForNode(graph, nodeId, rootDir)) {
     if (edgeFilter && !edgeFilter.includes(edge.relation)) continue;
     const neighborId = getNeighborId(edge, nodeId);
     if (visited.has(neighborId)) continue;
@@ -244,7 +269,7 @@ function traverseNeighbors(
     });
 
     neighbor.lastAccessed = Date.now();
-    traverseNeighbors(graph, neighborId, queryVec, depth + 1, maxDepth, [...pathLabels, `--[${edge.relation}]-->`, neighbor.label], visited, results, edgeFilter);
+    traverseNeighbors(graph, rootDir, neighborId, queryVec, depth + 1, maxDepth, [...pathLabels, `--[${edge.relation}]-->`, neighbor.label], visited, results, edgeFilter);
   }
 }
 
@@ -258,9 +283,10 @@ export async function pruneStaleLinks(rootDir: string, threshold?: number): Prom
   }
 
   for (const id of toRemove) delete graph.edges[id];
+  if (toRemove.length > 0) invalidateAdjacency(rootDir);
 
   const orphanNodeIds = Object.keys(graph.nodes).filter(nodeId =>
-    getEdgesForNode(graph, nodeId).length === 0
+    getEdgesForNode(graph, nodeId, rootDir).length === 0
       && graph.nodes[nodeId].accessCount <= 1
       && (Date.now() - graph.nodes[nodeId].lastAccessed) > 7 * 86_400_000
   );
@@ -325,19 +351,19 @@ export async function retrieveWithTraversal(rootDir: string, startNodeId: string
   }];
 
   const visited = new Set([startNodeId]);
-  collectTraversal(graph, startNodeId, 1, maxDepth, [startNode.label], visited, results, edgeFilter);
+  collectTraversal(graph, rootDir, startNodeId, 1, maxDepth, [startNode.label], visited, results, edgeFilter);
 
   scheduleSave(rootDir);
   return results;
 }
 
 function collectTraversal(
-  graph: GraphStore, nodeId: string, depth: number, maxDepth: number,
+  graph: GraphStore, rootDir: string, nodeId: string, depth: number, maxDepth: number,
   pathLabels: string[], visited: Set<string>, results: TraversalResult[], edgeFilter?: RelationType[],
 ): void {
   if (depth > maxDepth) return;
 
-  for (const edge of getEdgesForNode(graph, nodeId)) {
+  for (const edge of getEdgesForNode(graph, nodeId, rootDir)) {
     if (edgeFilter && !edgeFilter.includes(edge.relation)) continue;
     const neighborId = getNeighborId(edge, nodeId);
     if (visited.has(neighborId)) continue;
@@ -359,7 +385,7 @@ function collectTraversal(
       relevanceScore: Math.round(score * 10) / 10,
     });
 
-    collectTraversal(graph, neighborId, depth + 1, maxDepth, [...pathLabels, `--[${edge.relation}]-->`, neighbor.label], visited, results, edgeFilter);
+    collectTraversal(graph, rootDir, neighborId, depth + 1, maxDepth, [...pathLabels, `--[${edge.relation}]-->`, neighbor.label], visited, results, edgeFilter);
   }
 }
 

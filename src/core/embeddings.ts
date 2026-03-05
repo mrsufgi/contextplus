@@ -63,6 +63,128 @@ interface BinaryCacheMeta {
   hashes: string[];
 }
 
+export class VectorStore {
+  readonly dims: number;
+  readonly count: number;
+  private readonly buffer: Float32Array;
+  private readonly keyToIndex: Map<string, number>;
+  private readonly hashByIndex: string[];
+  private readonly keyByIndex: string[];
+
+  constructor(dims: number, keys: string[], hashes: string[], buffer: Float32Array) {
+    this.dims = dims;
+    this.count = keys.length;
+    this.buffer = buffer;
+    this.hashByIndex = hashes;
+    this.keyByIndex = keys;
+    this.keyToIndex = new Map();
+    for (let i = 0; i < keys.length; i++) this.keyToIndex.set(keys[i], i);
+  }
+
+  getHash(key: string): string | undefined {
+    const idx = this.keyToIndex.get(key);
+    return idx !== undefined ? this.hashByIndex[idx] : undefined;
+  }
+
+  hasKey(key: string): boolean {
+    return this.keyToIndex.has(key);
+  }
+
+  getVector(key: string): number[] | undefined {
+    const idx = this.keyToIndex.get(key);
+    if (idx === undefined) return undefined;
+    const offset = idx * this.dims;
+    return Array.from(this.buffer.subarray(offset, offset + this.dims));
+  }
+
+  cosineByKey(queryVec: number[], key: string): number {
+    const idx = this.keyToIndex.get(key);
+    if (idx === undefined) return 0;
+    return this.cosineByIndex(queryVec, idx);
+  }
+
+  cosineByIndex(queryVec: number[], idx: number): number {
+    const offset = idx * this.dims;
+    let dot = 0, normA = 0, normB = 0;
+    for (let j = 0; j < this.dims; j++) {
+      const a = queryVec[j];
+      const b = this.buffer[offset + j];
+      dot += a * b;
+      normA += a * a;
+      normB += b * b;
+    }
+    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    return denom === 0 ? 0 : dot / denom;
+  }
+
+  cosineWithNorm(queryVec: number[], queryNorm: number, idx: number): number {
+    const offset = idx * this.dims;
+    let dot = 0, normB = 0;
+    for (let j = 0; j < this.dims; j++) {
+      const b = this.buffer[offset + j];
+      dot += queryVec[j] * b;
+      normB += b * b;
+    }
+    const denom = queryNorm * Math.sqrt(normB);
+    return denom === 0 ? 0 : dot / denom;
+  }
+
+  getKeyByIndex(idx: number): string {
+    return this.keyByIndex[idx];
+  }
+
+  toCache(): EmbeddingCache {
+    const cache: EmbeddingCache = {};
+    for (let i = 0; i < this.count; i++) {
+      const offset = i * this.dims;
+      cache[this.keyByIndex[i]] = {
+        hash: this.hashByIndex[i],
+        vector: Array.from(this.buffer.subarray(offset, offset + this.dims)),
+      };
+    }
+    return cache;
+  }
+
+  static fromCache(cache: EmbeddingCache): VectorStore | null {
+    const keys = Object.keys(cache);
+    if (keys.length === 0) return null;
+    const dims = cache[keys[0]].vector.length;
+    const hashes = keys.map((k) => cache[k].hash);
+    const buffer = new Float32Array(keys.length * dims);
+    for (let i = 0; i < keys.length; i++) {
+      buffer.set(cache[keys[i]].vector, i * dims);
+    }
+    return new VectorStore(dims, keys, hashes, buffer);
+  }
+}
+
+export async function loadVectorStore(rootDir: string, fileName: string): Promise<VectorStore | null> {
+  const paths = binaryPaths(rootDir, fileName);
+  try {
+    const [metaRaw, binBuf] = await Promise.all([
+      readFile(paths.meta, "utf-8"),
+      readFile(paths.bin),
+    ]);
+    const meta: BinaryCacheMeta = JSON.parse(metaRaw);
+    if (!meta.dims || !meta.keys || !meta.hashes) return null;
+    const buffer = new Float32Array(binBuf.buffer, binBuf.byteOffset, binBuf.byteLength / 4);
+    return new VectorStore(meta.dims, meta.keys, meta.hashes, buffer);
+  } catch {
+    try {
+      const legacy = JSON.parse(await readFile(join(rootDir, CACHE_DIR, fileName), "utf-8")) as EmbeddingCache;
+      return VectorStore.fromCache(legacy);
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function vectorNorm(vec: number[]): number {
+  let sum = 0;
+  for (let i = 0; i < vec.length; i++) sum += vec[i] * vec[i];
+  return Math.sqrt(sum);
+}
+
 const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text";
 const CACHE_DIR = ".mcp_data";
 const CACHE_FILE = "embeddings-cache.json";

@@ -8,7 +8,10 @@ import {
   fetchEmbedding,
   getEmbeddingBatchSize,
   loadEmbeddingCache,
+  loadVectorStore,
   saveEmbeddingCache,
+  vectorNorm,
+  VectorStore,
   type EmbeddingCache,
 } from "../core/embeddings.js";
 import { resolve } from "path";
@@ -54,7 +57,8 @@ interface CallSite {
 
 interface IdentifierIndex {
   docs: IdentifierDoc[];
-  vectors: number[][];
+  vectorBuffer: Float32Array;
+  vectorDims: number;
   fileLines: Map<string, string[]>;
 }
 
@@ -219,42 +223,58 @@ async function buildIdentifierIndex(rootDir: string): Promise<IdentifierIndex> {
   }
 
   if (docs.length === 0) {
-    const empty: IdentifierIndex = { docs: [], vectors: [], fileLines };
+    const empty: IdentifierIndex = { docs: [], vectorBuffer: new Float32Array(0), vectorDims: 0, fileLines };
     cachedIndex = empty;
     cachedRootDir = rootDir;
     cachedAt = Date.now();
     return empty;
   }
 
-  const cache = await loadEmbeddingCache(rootDir, IDENTIFIER_CACHE_FILE);
-  const vectors: number[][] = new Array(docs.length);
+  const store = await loadVectorStore(rootDir, IDENTIFIER_CACHE_FILE);
+  const cache = store ? null : await loadEmbeddingCache(rootDir, IDENTIFIER_CACHE_FILE);
   const uncached: { idx: number; key: string; hash: string; text: string }[] = [];
+  const tempVectors: (number[] | null)[] = new Array(docs.length).fill(null);
 
   for (let i = 0; i < docs.length; i++) {
     const text = docs[i].text;
     const hash = hashContent(text);
     const key = `id:${docs[i].id}`;
-    if (cache[key]?.hash === hash) {
-      vectors[i] = cache[key].vector;
-    } else {
-      uncached.push({ idx: i, key, hash, text });
+    if (store) {
+      if (store.getHash(key) === hash) continue;
+    } else if (cache && cache[key]?.hash === hash) {
+      tempVectors[i] = cache[key].vector;
+      continue;
     }
+    uncached.push({ idx: i, key, hash, text });
   }
 
+  const dirtyCache: EmbeddingCache = {};
   if (uncached.length > 0) {
     const batchSize = getEmbeddingBatchSize();
     for (let i = 0; i < uncached.length; i += batchSize) {
       const batch = uncached.slice(i, i + batchSize);
       const embeddings = await fetchEmbedding(batch.map((entry) => entry.text));
       for (let j = 0; j < batch.length; j++) {
-        vectors[batch[j].idx] = embeddings[j];
-        cache[batch[j].key] = { hash: batch[j].hash, vector: embeddings[j] };
+        tempVectors[batch[j].idx] = embeddings[j];
+        dirtyCache[batch[j].key] = { hash: batch[j].hash, vector: embeddings[j] };
       }
     }
-    await saveEmbeddingCache(rootDir, cache, IDENTIFIER_CACHE_FILE);
+    await saveEmbeddingCache(rootDir, dirtyCache, IDENTIFIER_CACHE_FILE);
   }
 
-  const index: IdentifierIndex = { docs, vectors, fileLines };
+  const dims = store?.dims ?? (tempVectors.find((v) => v !== null)?.length ?? 1024);
+  const vectorBuffer = new Float32Array(docs.length * dims);
+  for (let i = 0; i < docs.length; i++) {
+    const key = `id:${docs[i].id}`;
+    if (tempVectors[i]) {
+      vectorBuffer.set(tempVectors[i]!, i * dims);
+    } else if (store?.hasKey(key)) {
+      const vec = store.getVector(key);
+      if (vec) vectorBuffer.set(vec, i * dims);
+    }
+  }
+
+  const index: IdentifierIndex = { docs, vectorBuffer, vectorDims: dims, fileLines };
   cachedIndex = index;
   cachedRootDir = rootDir;
   cachedAt = Date.now();
@@ -364,14 +384,24 @@ export async function semanticIdentifierSearch(options: SemanticIdentifierSearch
   }
 
   const [queryVec] = await fetchEmbedding(options.query);
+  const queryNorm = vectorNorm(queryVec);
   const queryTerms = new Set(splitTerms(options.query));
+  const { vectorBuffer, vectorDims } = index;
 
   const scored: RankedIdentifier[] = [];
   for (let i = 0; i < index.docs.length; i++) {
     const doc = index.docs[i];
     if (includeKinds && !includeKinds.has(doc.kind.toLowerCase())) continue;
 
-    const semanticScore = Math.max(cosine(queryVec, index.vectors[i]), 0);
+    const offset = i * vectorDims;
+    let dot = 0, normB = 0;
+    for (let j = 0; j < vectorDims; j++) {
+      const b = vectorBuffer[offset + j];
+      dot += queryVec[j] * b;
+      normB += b * b;
+    }
+    const denom = queryNorm * Math.sqrt(normB);
+    const semanticScore = Math.max(denom === 0 ? 0 : dot / denom, 0);
     const keywordScore = getKeywordCoverage(queryTerms, `${doc.name} ${doc.signature} ${doc.path} ${doc.header}`);
     const totalWeight = semanticWeight + keywordWeight;
     const score = totalWeight > 0
