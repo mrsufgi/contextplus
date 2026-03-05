@@ -2,7 +2,7 @@
 // Indexes file headers and symbols, caches embeddings to disk for speed
 
 import { Ollama } from "ollama";
-import { readFile, writeFile, mkdir, rename } from "fs/promises";
+import { readFile, writeFile, mkdir, rename, stat, unlink } from "fs/promises";
 import { join } from "path";
 
 export interface SearchDocument {
@@ -55,6 +55,12 @@ interface ResolvedSearchQueryOptions {
 
 export interface EmbeddingCache {
   [path: string]: { hash: string; vector: number[] };
+}
+
+interface BinaryCacheMeta {
+  dims: number;
+  keys: string[];
+  hashes: string[];
 }
 
 const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text";
@@ -258,9 +264,66 @@ export async function ensureMcpDataDir(rootDir: string): Promise<void> {
   await mkdir(join(rootDir, CACHE_DIR), { recursive: true });
 }
 
-export async function loadEmbeddingCache(rootDir: string, fileName: string): Promise<EmbeddingCache> {
+function binaryPaths(rootDir: string, fileName: string): { meta: string; bin: string } {
+  const base = fileName.replace(/\.json$/, "");
+  return {
+    meta: join(rootDir, CACHE_DIR, `${base}.meta.json`),
+    bin: join(rootDir, CACHE_DIR, `${base}.vectors.bin`),
+  };
+}
+
+async function loadBinaryCache(metaPath: string, binPath: string): Promise<EmbeddingCache | null> {
   try {
-    return JSON.parse(await readFile(join(rootDir, CACHE_DIR, fileName), "utf-8"));
+    const [metaRaw, binBuf] = await Promise.all([
+      readFile(metaPath, "utf-8"),
+      readFile(binPath),
+    ]);
+    const meta: BinaryCacheMeta = JSON.parse(metaRaw);
+    if (!meta.dims || !meta.keys || !meta.hashes) return null;
+    const floats = new Float32Array(binBuf.buffer, binBuf.byteOffset, binBuf.byteLength / 4);
+    const cache: EmbeddingCache = {};
+    for (let i = 0; i < meta.keys.length; i++) {
+      const offset = i * meta.dims;
+      cache[meta.keys[i]] = {
+        hash: meta.hashes[i],
+        vector: Array.from(floats.subarray(offset, offset + meta.dims)),
+      };
+    }
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+async function saveBinaryCache(metaPath: string, binPath: string, cache: EmbeddingCache): Promise<void> {
+  const keys = Object.keys(cache);
+  if (keys.length === 0) return;
+  const dims = cache[keys[0]].vector.length;
+  const hashes = keys.map((k) => cache[k].hash);
+  const meta: BinaryCacheMeta = { dims, keys, hashes };
+  const floats = new Float32Array(keys.length * dims);
+  for (let i = 0; i < keys.length; i++) {
+    floats.set(cache[keys[i]].vector, i * dims);
+  }
+  const metaTmp = `${metaPath}.${process.pid}.${Date.now()}.tmp`;
+  const binTmp = `${binPath}.${process.pid}.${Date.now()}.tmp`;
+  await Promise.all([
+    writeFile(metaTmp, JSON.stringify(meta)),
+    writeFile(binTmp, Buffer.from(floats.buffer)),
+  ]);
+  await Promise.all([
+    rename(metaTmp, metaPath),
+    rename(binTmp, binPath),
+  ]);
+}
+
+export async function loadEmbeddingCache(rootDir: string, fileName: string): Promise<EmbeddingCache> {
+  const paths = binaryPaths(rootDir, fileName);
+  const binary = await loadBinaryCache(paths.meta, paths.bin);
+  if (binary) return binary;
+  try {
+    const legacy = JSON.parse(await readFile(join(rootDir, CACHE_DIR, fileName), "utf-8"));
+    return legacy as EmbeddingCache;
   } catch {
     return {};
   }
@@ -283,21 +346,15 @@ export async function saveEmbeddingCache(
   _saveLocks.set(lockKey, lock);
   try {
     await ensureMcpDataDir(rootDir);
-    const filePath = join(rootDir, CACHE_DIR, fileName);
-    let existing: EmbeddingCache = {};
-    try { existing = JSON.parse(await readFile(filePath, "utf-8")); } catch {}
+    const paths = binaryPaths(rootDir, fileName);
+    const existing = await loadEmbeddingCache(rootDir, fileName);
     if (removedKeys) {
       for (const key of removedKeys) delete existing[key];
     }
     const merged = { ...existing, ...cache };
-    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-    await writeFile(tmpPath, JSON.stringify(merged, (_key, value) => {
-      if (Array.isArray(value) && value.length > 100 && typeof value[0] === "number") {
-        return value.map((v: number) => Math.round(v * 1e6) / 1e6);
-      }
-      return value;
-    }));
-    await rename(tmpPath, filePath);
+    await saveBinaryCache(paths.meta, paths.bin, merged);
+    const legacyPath = join(rootDir, CACHE_DIR, fileName);
+    try { await unlink(legacyPath); } catch {}
   } finally {
     _saveLocks.delete(lockKey);
     resolve();
