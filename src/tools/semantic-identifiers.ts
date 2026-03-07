@@ -421,30 +421,51 @@ export async function semanticIdentifierSearch(options: SemanticIdentifierSearch
   }
 
   const top = scored.sort((a, b) => b.score - a.score).slice(0, topK);
-  const cache = await loadEmbeddingCache(options.rootDir, IDENTIFIER_CACHE_FILE);
+
+  // O2: Extract only callsite entries from VectorStore — avoids 1s Array.from() on all 29K vectors
+  // VectorStore loads in ~115ms (zero-copy Float32Array), then we convert only ~2K callsite vectors (~65ms)
+  // vs loadEmbeddingCache which converts ALL 29K vectors (~1,000ms)
+  const store = await loadVectorStore(options.rootDir, IDENTIFIER_CACHE_FILE);
+  const callsiteCache: EmbeddingCache = {};
+  if (store) {
+    for (let i = 0; i < store.count; i++) {
+      const key = store.getKeyByIndex(i);
+      if (key.startsWith(CALLSITE_CACHE_PREFIX)) {
+        const hash = store.getHash(key);
+        const vector = store.getVector(key);
+        if (hash && vector) callsiteCache[key] = { hash, vector };
+      }
+    }
+  }
 
   const lines: string[] = [
     `Top ${top.length} identifier matches for: "${options.query}"`,
     "",
   ];
 
+  // O3: Parallelize rankCallSites — run all top-K in parallel
+  const callResults = await Promise.all(
+    top.map((item) =>
+      rankCallSites(
+        options.rootDir,
+        callsiteCache,
+        queryTerms,
+        queryVec,
+        item.doc,
+        index.fileLines,
+        topCalls,
+      )
+    )
+  );
+
   for (let i = 0; i < top.length; i++) {
     const item = top[i];
+    const calls = callResults[i];
     const range = formatLineRange(item.doc.line, item.doc.endLine);
     lines.push(`${i + 1}. ${item.doc.kind} ${item.doc.name} - ${item.doc.path} (${range})`);
     lines.push(`   Score: ${Math.round(item.score * 1000) / 10}% | Semantic: ${Math.round(item.semanticScore * 1000) / 10}% | Keyword: ${Math.round(item.keywordScore * 1000) / 10}%`);
     lines.push(`   Signature: ${item.doc.signature}`);
     if (item.doc.parentName) lines.push(`   Parent: ${item.doc.parentName}`);
-
-    const calls = await rankCallSites(
-      options.rootDir,
-      cache,
-      queryTerms,
-      queryVec,
-      item.doc,
-      index.fileLines,
-      topCalls,
-    );
 
     if (calls.sites.length === 0) {
       lines.push("   Calls: none found");
@@ -460,7 +481,11 @@ export async function semanticIdentifierSearch(options: SemanticIdentifierSearch
     lines.push("");
   }
 
-  await saveEmbeddingCache(options.rootDir, cache, IDENTIFIER_CACHE_FILE);
+  // O1: Only save if new callsite embeddings were computed
+  const hasNewCallsites = Object.keys(callsiteCache).length > 0;
+  if (hasNewCallsites) {
+    await saveEmbeddingCache(options.rootDir, callsiteCache, IDENTIFIER_CACHE_FILE);
+  }
   return lines.join("\n");
 }
 
@@ -535,7 +560,10 @@ export async function refreshIdentifierEmbeddings(options: { rootDir: string; re
     }
   }
 
-  await saveEmbeddingCache(options.rootDir, cache, IDENTIFIER_CACHE_FILE, removedKeys);
+  // O1: Skip save when nothing changed — avoids 1.3s reload+write of 120MB cache
+  if (pending.length > 0 || removedKeys.length > 0) {
+    await saveEmbeddingCache(options.rootDir, cache, IDENTIFIER_CACHE_FILE, removedKeys);
+  }
   invalidateIdentifierSearchCache();
   return pending.length;
 }

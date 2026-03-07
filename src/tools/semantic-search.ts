@@ -213,7 +213,10 @@ export async function refreshFileSearchEmbeddings(options: { rootDir: string; re
     }
   }
 
-  await saveEmbeddingCache(options.rootDir, cache, SEARCH_CACHE_FILE, removedKeys);
+  // O1: Skip save when nothing changed — avoids redundant 14MB cache reload+write
+  if (pending.length > 0 || removedKeys.length > 0) {
+    await saveEmbeddingCache(options.rootDir, cache, SEARCH_CACHE_FILE, removedKeys);
+  }
   invalidateSearchCache();
   return pending.length;
 }

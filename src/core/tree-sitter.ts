@@ -109,31 +109,46 @@ const DEFINITION_TYPES: Record<string, Record<string, string>> = {
 };
 
 let ParserClass: any = null;
+let initPromise: Promise<any> | null = null;
 const grammarCache = new Map<string, TSLanguage>();
+const grammarInflight = new Map<string, Promise<TSLanguage | null>>();
 
+// O4: Promise dedup — prevents 20 concurrent Parser.init() calls on first batch
 async function initParser(): Promise<typeof ParserClass> {
   if (ParserClass) return ParserClass;
-
-  const mod = await import("web-tree-sitter");
-  const Parser = mod.default ?? mod;
-  await Parser.init();
-  ParserClass = Parser;
-  return Parser;
+  if (!initPromise) {
+    initPromise = (async () => {
+      const mod = await import("web-tree-sitter");
+      const Parser = mod.default ?? mod;
+      await Parser.init();
+      ParserClass = Parser;
+      return Parser;
+    })();
+  }
+  return initPromise;
 }
 
+// O5: Promise dedup — prevents parallel grammar loads for the same language
 async function loadGrammar(grammarName: string): Promise<TSLanguage | null> {
   if (grammarCache.has(grammarName)) return grammarCache.get(grammarName)!;
+  if (grammarInflight.has(grammarName)) return grammarInflight.get(grammarName)!;
 
-  try {
-    const Parser = await initParser();
-    const wasmPath = join(GRAMMAR_DIR, `tree-sitter-${grammarName}.wasm`);
-    await readFile(wasmPath);
-    const lang = await Parser.Language.load(wasmPath);
-    grammarCache.set(grammarName, lang);
-    return lang;
-  } catch {
-    return null;
-  }
+  const promise = (async () => {
+    try {
+      const Parser = await initParser();
+      const wasmPath = join(GRAMMAR_DIR, `tree-sitter-${grammarName}.wasm`);
+      await readFile(wasmPath);
+      const lang = await Parser.Language.load(wasmPath);
+      grammarCache.set(grammarName, lang);
+      return lang;
+    } catch {
+      return null;
+    } finally {
+      grammarInflight.delete(grammarName);
+    }
+  })();
+  grammarInflight.set(grammarName, promise);
+  return promise;
 }
 
 function extractName(node: TSNode, _kind: string): string {
