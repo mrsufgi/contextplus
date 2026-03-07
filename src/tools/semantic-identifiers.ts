@@ -69,6 +69,7 @@ const INDEX_TTL_MS = 300_000;
 let cachedRootDir: string | null = null;
 let cachedAt = 0;
 let cachedIndex: IdentifierIndex | null = null;
+let buildPromise: Promise<IdentifierIndex> | null = null;
 
 function hashContent(text: string): string {
   let h = 0;
@@ -86,15 +87,12 @@ function splitTerms(text: string): string[] {
 }
 
 function cosine(a: number[], b: number[]): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
+  let dot = 0, normA = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
-    normB += b[i] * b[i];
   }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  const denom = Math.sqrt(normA);
   return denom === 0 ? 0 : dot / denom;
 }
 
@@ -127,13 +125,15 @@ function getKeywordCoverage(queryTerms: Set<string>, input: string): number {
   return matched / queryTerms.size;
 }
 
+const DEF_PATTERN_1 = /(?:function|class|enum|interface|struct|type|trait|fn|def|func)\s+/;
+const DEF_PATTERN_2 = /(?:const|let|var|pub|export)\s+(?:async\s+)?(?:function\s+)?/;
+
 function isDefinitionLine(line: string, symbolName: string): boolean {
-  const escaped = escapeRegex(symbolName);
-  const patterns = [
-    new RegExp(`(?:function|class|enum|interface|struct|type|trait|fn|def|func)\\s+${escaped}`),
-    new RegExp(`(?:const|let|var|pub|export)\\s+(?:async\\s+)?(?:function\\s+)?${escaped}`),
-  ];
-  return patterns.some((pattern) => pattern.test(line));
+  const idx1 = line.search(DEF_PATTERN_1);
+  if (idx1 !== -1 && line.includes(symbolName, idx1)) return true;
+  const idx2 = line.search(DEF_PATTERN_2);
+  if (idx2 !== -1 && line.includes(symbolName, idx2)) return true;
+  return false;
 }
 
 function normalizeKinds(kinds?: string[]): Set<string> | null {
@@ -185,7 +185,10 @@ async function buildIdentifierIndex(rootDir: string): Promise<IdentifierIndex> {
   if (cachedIndex && cachedRootDir === rootDir && Date.now() - cachedAt < INDEX_TTL_MS) {
     return cachedIndex;
   }
+  if (buildPromise) return buildPromise;
 
+  buildPromise = (async () => {
+    try {
   const entries = await walkDirectory({ rootDir, depthLimit: 0 });
   const files = entries.filter((entry) => !entry.isDirectory && isSupportedFile(entry.path));
   const docs: IdentifierDoc[] = [];
@@ -279,6 +282,11 @@ async function buildIdentifierIndex(rootDir: string): Promise<IdentifierIndex> {
   cachedRootDir = rootDir;
   cachedAt = Date.now();
   return index;
+    } finally {
+      buildPromise = null;
+    }
+  })();
+  return buildPromise;
 }
 
 async function rankCallSites(
@@ -394,14 +402,11 @@ export async function semanticIdentifierSearch(options: SemanticIdentifierSearch
     if (includeKinds && !includeKinds.has(doc.kind.toLowerCase())) continue;
 
     const offset = i * vectorDims;
-    let dot = 0, normB = 0;
+    let dot = 0;
     for (let j = 0; j < vectorDims; j++) {
-      const b = vectorBuffer[offset + j];
-      dot += queryVec[j] * b;
-      normB += b * b;
+      dot += queryVec[j] * vectorBuffer[offset + j];
     }
-    const denom = queryNorm * Math.sqrt(normB);
-    const semanticScore = Math.max(denom === 0 ? 0 : dot / denom, 0);
+    const semanticScore = Math.max(queryNorm === 0 ? 0 : dot / queryNorm, 0);
     const keywordScore = getKeywordCoverage(queryTerms, `${doc.name} ${doc.signature} ${doc.path} ${doc.header}`);
     const totalWeight = semanticWeight + keywordWeight;
     const score = totalWeight > 0

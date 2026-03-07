@@ -105,28 +105,23 @@ export class VectorStore {
 
   cosineByIndex(queryVec: number[], idx: number): number {
     const offset = idx * this.dims;
-    let dot = 0, normA = 0, normB = 0;
+    let dot = 0, normA = 0;
     for (let j = 0; j < this.dims; j++) {
       const a = queryVec[j];
-      const b = this.buffer[offset + j];
-      dot += a * b;
+      dot += a * this.buffer[offset + j];
       normA += a * a;
-      normB += b * b;
     }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    const denom = Math.sqrt(normA);
     return denom === 0 ? 0 : dot / denom;
   }
 
   cosineWithNorm(queryVec: number[], queryNorm: number, idx: number): number {
     const offset = idx * this.dims;
-    let dot = 0, normB = 0;
+    let dot = 0;
     for (let j = 0; j < this.dims; j++) {
-      const b = this.buffer[offset + j];
-      dot += queryVec[j] * b;
-      normB += b * b;
+      dot += queryVec[j] * this.buffer[offset + j];
     }
-    const denom = queryNorm * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
+    return queryNorm === 0 ? 0 : dot / queryNorm;
   }
 
   getKeyByIndex(idx: number): string {
@@ -286,13 +281,12 @@ function hashContent(text: string): string {
 }
 
 function cosine(a: number[], b: number[]): number {
-  let dot = 0, normA = 0, normB = 0;
+  let dot = 0, normA = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
-    normB += b[i] * b[i];
   }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  const denom = Math.sqrt(normA);
   return denom === 0 ? 0 : dot / denom;
 }
 

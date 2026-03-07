@@ -22,6 +22,7 @@ interface TreeNode {
 }
 
 const CHARS_PER_TOKEN = 4;
+const FILE_CONCURRENCY = 20;
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
@@ -34,6 +35,8 @@ async function buildTree(entries: FileEntry[], _rootDir: string, includeSymbols:
 
   const sortedEntries = entries.sort((a, b) => a.depth - b.depth || a.relativePath.localeCompare(b.relativePath));
 
+  // Build tree structure first (sequential — parent refs needed)
+  const supportedNodes: { node: TreeNode; path: string }[] = [];
   for (const entry of sortedEntries) {
     const parts = entry.relativePath.split("/");
     const parentPath = parts.length > 1 ? parts.slice(0, -1).join("/") : ".";
@@ -50,18 +53,29 @@ async function buildTree(entries: FileEntry[], _rootDir: string, includeSymbols:
     };
 
     if (!entry.isDirectory && isSupportedFile(entry.path)) {
-      try {
-        const analysis = await analyzeFile(entry.path);
-        node.header = analysis.header || undefined;
-        if (includeSymbols && analysis.symbols.length > 0) {
-          node.symbols = analysis.symbols.map((s) => formatSymbol(s, 0)).join("\n");
-        }
-      } catch { }
+      supportedNodes.push({ node, path: entry.path });
     }
 
     parent.children.push(node);
     if (entry.isDirectory) {
       dirMap.set(entry.relativePath, node);
+    }
+  }
+
+  // Analyze supported files in parallel batches
+  for (let i = 0; i < supportedNodes.length; i += FILE_CONCURRENCY) {
+    const batch = supportedNodes.slice(i, i + FILE_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(({ path }) => analyzeFile(path))
+    );
+    for (let j = 0; j < results.length; j++) {
+      if (results[j].status !== "fulfilled") continue;
+      const analysis = (results[j] as PromiseFulfilledResult<Awaited<ReturnType<typeof analyzeFile>>>).value;
+      const { node } = batch[j];
+      node.header = analysis.header || undefined;
+      if (includeSymbols && analysis.symbols.length > 0) {
+        node.symbols = analysis.symbols.map((s) => formatSymbol(s, 0)).join("\n");
+      }
     }
   }
 

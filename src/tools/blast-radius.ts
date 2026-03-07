@@ -6,6 +6,8 @@ import { isSupportedFile } from "../core/parser.js";
 import { readFile } from "fs/promises";
 import { getCachedFileLines } from "./semantic-identifiers.js";
 
+const FILE_CONCURRENCY = 20;
+
 export interface BlastRadiusOptions {
   rootDir: string;
   symbolName: string;
@@ -38,20 +40,26 @@ export async function getBlastRadius(options: BlastRadiusOptions): Promise<strin
   } else {
     const entries = await walkDirectory({ rootDir: options.rootDir, depthLimit: 0 });
     const files = entries.filter((e) => !e.isDirectory && isSupportedFile(e.path));
-    for (const file of files) {
-      try {
-        const content = await readFile(file.path, "utf-8");
-        const lines = content.split("\n");
-        for (let i = 0; i < lines.length; i++) {
-          if (symbolPattern.test(lines[i])) {
-            const isDefinition = options.fileContext && file.relativePath === options.fileContext && isDefinitionLine(lines[i], options.symbolName);
-            if (!isDefinition) {
-              usages.push({ file: file.relativePath, line: i + 1, context: lines[i].trim().substring(0, 120) });
+    for (let fi = 0; fi < files.length; fi += FILE_CONCURRENCY) {
+      const batch = files.slice(fi, fi + FILE_CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map(async (file) => {
+          const content = await readFile(file.path, "utf-8");
+          return { file, lines: content.split("\n") };
+        })
+      );
+      for (const result of results) {
+        if (result.status !== "fulfilled") continue;
+        const { file, lines: fileLines } = result.value;
+        for (let i = 0; i < fileLines.length; i++) {
+          if (symbolPattern.test(fileLines[i])) {
+            const isDef = options.fileContext && file.relativePath === options.fileContext && isDefinitionLine(fileLines[i], options.symbolName);
+            if (!isDef) {
+              usages.push({ file: file.relativePath, line: i + 1, context: fileLines[i].trim().substring(0, 120) });
             }
             symbolPattern.lastIndex = 0;
           }
         }
-      } catch {
       }
     }
   }
@@ -87,10 +95,13 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const DEF_PATTERN_1 = /(?:function|class|enum|interface|struct|type|trait|fn|def|func)\s+/;
+const DEF_PATTERN_2 = /(?:const|let|var|pub|export)\s+(?:async\s+)?(?:function\s+)?/;
+
 function isDefinitionLine(line: string, symbolName: string): boolean {
-  const definitionPatterns = [
-    new RegExp(`(?:function|class|enum|interface|struct|type|trait|fn|def|func)\\s+${escapeRegex(symbolName)}`),
-    new RegExp(`(?:const|let|var|pub|export)\\s+(?:async\\s+)?(?:function\\s+)?${escapeRegex(symbolName)}`),
-  ];
-  return definitionPatterns.some((p) => p.test(line));
+  const idx1 = line.search(DEF_PATTERN_1);
+  if (idx1 !== -1 && line.includes(symbolName, idx1)) return true;
+  const idx2 = line.search(DEF_PATTERN_2);
+  if (idx2 !== -1 && line.includes(symbolName, idx2)) return true;
+  return false;
 }

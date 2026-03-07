@@ -140,11 +140,12 @@ function findBraceBlockEnd(lines: string[], startIndex: number): number {
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = lines[i];
-    for (const ch of line) {
-      if (ch === "{") {
+    for (let c = 0; c < line.length; c++) {
+      const ch = line.charCodeAt(c);
+      if (ch === 123) { // {
         depth++;
         seenOpening = true;
-      } else if (ch === "}" && seenOpening) {
+      } else if (ch === 125 && seenOpening) { // }
         depth--;
         if (depth <= 0) return i + 1;
       }
@@ -386,10 +387,10 @@ export function isSupportedFile(filePath: string): boolean {
   return getSupportedExtensions().includes(ext);
 }
 
-export function flattenSymbols(symbols: CodeSymbol[], parentName?: string): SymbolLocation[] {
-  const out: SymbolLocation[] = [];
+export function flattenSymbols(symbols: CodeSymbol[], parentName?: string, out?: SymbolLocation[]): SymbolLocation[] {
+  const result = out ?? [];
   for (const sym of symbols) {
-    out.push({
+    result.push({
       name: sym.name,
       kind: sym.kind,
       line: sym.line,
@@ -398,8 +399,8 @@ export function flattenSymbols(symbols: CodeSymbol[], parentName?: string): Symb
       parentName,
     });
     if (sym.children.length > 0) {
-      out.push(...flattenSymbols(sym.children, sym.name));
+      flattenSymbols(sym.children, sym.name, result);
     }
   }
-  return out;
+  return result;
 }

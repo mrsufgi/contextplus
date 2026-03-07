@@ -66,6 +66,7 @@ async function walkRecursive(
   if (maxDepth > 0 && depth > maxDepth) return;
 
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const subdirs: string[] = [];
   for (const entry of entries) {
     if (ALWAYS_IGNORE.has(entry.name) || entry.name.startsWith(".")) continue;
 
@@ -76,8 +77,9 @@ async function walkRecursive(
     const isDir = entry.isDirectory();
     results.push({ path: fullPath, relativePath: relPath, isDirectory: isDir, depth });
 
-    if (isDir) await walkRecursive(fullPath, rootDir, ig, depth + 1, maxDepth, results);
+    if (isDir) subdirs.push(fullPath);
   }
+  await Promise.all(subdirs.map(d => walkRecursive(d, rootDir, ig, depth + 1, maxDepth, results)));
 }
 
 export async function walkDirectory(options: WalkOptions): Promise<FileEntry[]> {

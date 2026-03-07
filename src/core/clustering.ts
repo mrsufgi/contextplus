@@ -8,13 +8,12 @@ export interface ClusterResult {
 }
 
 function cosine(a: number[], b: number[]): number {
-  let dot = 0, normA = 0, normB = 0;
+  let dot = 0, normA = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
-    normB += b[i] * b[i];
   }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  const denom = Math.sqrt(normA);
   return denom === 0 ? 0 : dot / denom;
 }
 
@@ -120,15 +119,16 @@ function kMeans(data: number[][], k: number): number[] {
       if (assignments[i] !== bestC) { assignments[i] = bestC; changed = true; }
     }
     if (!changed) break;
+    const sums = new Array(k).fill(null).map(() => new Float64Array(dim));
+    const counts = new Int32Array(k);
+    for (let i = 0; i < n; i++) {
+      const c = assignments[i];
+      counts[c]++;
+      for (let d = 0; d < dim; d++) sums[c][d] += data[i][d];
+    }
     for (let c = 0; c < k; c++) {
-      const members: number[] = [];
-      for (let i = 0; i < n; i++) if (assignments[i] === c) members.push(i);
-      if (members.length === 0) continue;
-      for (let d = 0; d < dim; d++) {
-        let sum = 0;
-        for (const m of members) sum += data[m][d];
-        centroids[c][d] = sum / members.length;
-      }
+      if (counts[c] === 0) continue;
+      for (let d = 0; d < dim; d++) centroids[c][d] = sums[c][d] / counts[c];
     }
   }
   return assignments;

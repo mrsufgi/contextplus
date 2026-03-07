@@ -31,8 +31,10 @@ export interface SemanticSearchOptions {
 let cachedIndex: SearchIndex | null = null;
 let cachedRootDir: string | null = null;
 let lastIndexTime = 0;
+let buildPromise: Promise<SearchIndex> | null = null;
 
-const INDEX_TTL_MS = 300000;
+const INDEX_TTL_MS = 300_000;
+const FILE_CONCURRENCY = 20;
 const SEARCH_CACHE_FILE = "embeddings-cache.json";
 const TEXT_INDEX_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonc", ".yaml", ".yml", ".toml", ".lock", ".env"]);
 const MAX_TEXT_DOC_CHARS = 4000;
@@ -109,23 +111,36 @@ async function buildIndex(rootDir: string): Promise<SearchIndex> {
   if (cachedIndex && cachedRootDir === rootDir && Date.now() - lastIndexTime < INDEX_TTL_MS) {
     return cachedIndex;
   }
+  if (buildPromise) return buildPromise;
 
-  const entries = await walkDirectory({ rootDir, depthLimit: 0 });
-  const files = entries.filter((e) => !e.isDirectory);
+  buildPromise = (async () => {
+    try {
+      const entries = await walkDirectory({ rootDir, depthLimit: 0 });
+      const files = entries.filter((e) => !e.isDirectory);
 
-  const docs: SearchDocument[] = [];
-  for (const file of files) {
-    const doc = await buildSearchDocumentForFile(rootDir, file.relativePath);
-    if (doc) docs.push(doc);
-  }
+      const docs: SearchDocument[] = [];
+      for (let i = 0; i < files.length; i += FILE_CONCURRENCY) {
+        const batch = files.slice(i, i + FILE_CONCURRENCY);
+        const results = await Promise.allSettled(
+          batch.map((file) => buildSearchDocumentForFile(rootDir, file.relativePath))
+        );
+        for (const result of results) {
+          if (result.status === "fulfilled" && result.value) docs.push(result.value);
+        }
+      }
 
-  const index = new SearchIndex();
-  await index.index(docs, rootDir);
-  cachedIndex = index;
-  cachedRootDir = rootDir;
-  lastIndexTime = Date.now();
+      const index = new SearchIndex();
+      await index.index(docs, rootDir);
+      cachedIndex = index;
+      cachedRootDir = rootDir;
+      lastIndexTime = Date.now();
 
-  return index;
+      return index;
+    } finally {
+      buildPromise = null;
+    }
+  })();
+  return buildPromise;
 }
 
 export async function semanticCodeSearch(options: SemanticSearchOptions): Promise<string> {
