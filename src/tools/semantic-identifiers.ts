@@ -485,17 +485,42 @@ export async function refreshIdentifierEmbeddings(options: { rootDir: string; re
   for (const relativePath of uniquePaths) {
     const definitionPrefix = `id:${relativePath}:`;
     const callsitePrefix = `${CALLSITE_CACHE_PREFIX}${relativePath}:`;
+
+    // Snapshot old entries before clearing so we can hash-compare
+    const oldEntries = new Map<string, { hash: string; vector: number[] }>();
     for (const key of Object.keys(cache)) {
       if (key.startsWith(definitionPrefix) || key.startsWith(callsitePrefix)) {
-        removedKeys.push(key);
+        oldEntries.set(key, cache[key]);
       }
     }
     removeFileScopedCacheEntries(cache, relativePath);
+
+    // Callsite embeddings are always stale when file content changes
+    for (const key of oldEntries.keys()) {
+      if (key.startsWith(callsitePrefix)) removedKeys.push(key);
+    }
+
     const docs = await buildIdentifierDocsForFile(options.rootDir, relativePath);
+    const newDefKeys = new Set<string>();
+
     for (const doc of docs) {
       const key = `id:${doc.id}`;
+      newDefKeys.add(key);
       const hash = hashContent(doc.text);
+      const old = oldEntries.get(key);
+      if (old?.hash === hash) {
+        // Symbol text unchanged — restore cached embedding, skip Ollama call
+        cache[key] = old;
+        continue;
+      }
       pending.push({ key, hash, text: doc.text });
+    }
+
+    // Mark old definitions that no longer exist as removed
+    for (const key of oldEntries.keys()) {
+      if (key.startsWith(definitionPrefix) && !newDefKeys.has(key)) {
+        removedKeys.push(key);
+      }
     }
   }
 
